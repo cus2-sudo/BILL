@@ -31,8 +31,40 @@ with tab1:
         with pdfplumber.open(pdf) as p:
             return "".join([page.extract_text() for page in p.pages])
 
-    # ===== GOODS =====
-    def extract_goods(text):
+    # ===== PARSE =====
+    def parse(text):
+        data = {}
+
+        # ===== CONSIGNEE =====
+        m = re.search(r"Consigned to\s*:\s*\n(.+)", text)
+        data["consignee"] = m.group(1).strip() if m else ""
+
+        # ===== CONTAINER =====
+        m = re.search(r"CONTAINER No/SEAL No\s*:\s*(\S+)/(\S+)", text)
+        if m:
+            data["container"] = m.group(1)
+            data["seal"] = m.group(2)
+        else:
+            data["container"] = ""
+            data["seal"] = ""
+
+        # ===== VESSEL =====
+        m = re.search(r"VESSEL'S NAME:\s*(.*?)\n", text)
+        vessel_full = m.group(1).strip() if m else ""
+
+        match = re.match(r"(.*)\s(\S+)$", vessel_full)
+        if match:
+            data["ocean_vessel"] = match.group(1)
+            data["voyage"] = match.group(2)
+        else:
+            data["ocean_vessel"] = vessel_full
+            data["voyage"] = ""
+
+        # ===== ETD =====
+        m = re.search(r"ETD:\s*([A-Za-z]+\s\d{2},\s\d{4})", text)
+        data["etd"] = m.group(1) if m else ""
+
+        # ===== GOODS =====
         lines = text.split("\n")
         goods = []
         start = False
@@ -47,34 +79,7 @@ with tab1:
                     break
                 goods.append(line.strip())
 
-        return " ".join(goods)
-
-    # ===== PARSE =====
-    def parse(text):
-        def get(p):
-            m = re.search(p, text)
-            return m.group(1).strip() if m else ""
-
-        data = {}
-
-        data["consignee"] = get(r"Consigned to\s*:\s*(.*?)\n")
-        data["container_seal"] = get(r"CONTAINER No/SEAL No\s*:\s*(.*?)\n")
-        vessel_full = get(r"VESSEL'S NAME:\s*(.*?)\n")
-        data["etd"] = get(r"ETD:\s*(.*?)\n")
-        data["goods"] = extract_goods(text)
-
-        # ===== TÁCH VESSEL / VOYAGE =====
-        match = re.match(r"(.*)\s(\S+)$", vessel_full)
-        if match:
-            data["ocean_vessel"] = match.group(1)
-            data["voyage"] = match.group(2)
-        else:
-            data["ocean_vessel"] = vessel_full
-            data["voyage"] = ""
-
-        # ===== POD =====
-        pod_match = re.search(r"\n([A-Z\s,]+JAPAN)\n", text)
-        data["pod"] = pod_match.group(1).strip() if pod_match else ""
+        data["goods"] = " ".join(goods)
 
         # ===== TOTAL =====
         total = re.search(r"TOTAL.*?\n.*?([\d,]+)\s+([\d,]+)\s+([\d\.]+)", text, re.DOTALL)
@@ -82,12 +87,14 @@ with tab1:
             data["packages"] = total.group(1)
             data["gross"] = total.group(2)
             data["cbm"] = total.group(3)
+        else:
+            data["packages"] = "0"
+            data["gross"] = "0"
+            data["cbm"] = "0"
 
-        # ===== CONTAINER =====
-        if "/" in data["container_seal"]:
-            c, s = data["container_seal"].split("/")
-            data["container"] = c
-            data["seal"] = s
+        # ===== POD =====
+        m = re.search(r"TO\s*:\s*\n(.+)", text)
+        data["pod"] = m.group(1).strip() if m else ""
 
         return data
 
@@ -144,26 +151,31 @@ with tab1:
         if excel_file:
             df = pd.read_excel(excel_file)
 
-            match = df[df.apply(lambda r: data["container"] in str(r), axis=1)]
+            container = data.get("container", "")
 
-            if not match.empty:
-                st.success("✅ Container OK")
-
-                row_text = str(match.iloc[0]).lower()
-
-                if data["ocean_vessel"].lower() in row_text:
-                    st.success("🚢 Vessel OK")
-                else:
-                    st.error("❌ Vessel sai")
-
-                if data["pod"].lower() in row_text:
-                    st.success("📍 POD OK")
-                    allow = True
-                else:
-                    st.error("❌ POD sai")
-
+            if container == "":
+                st.error("❌ Không đọc được container từ PDF")
             else:
-                st.error("❌ Container không có")
+                match = df[df.apply(lambda r: container in str(r), axis=1)]
+
+                if not match.empty:
+                    st.success("✅ Container OK")
+
+                    row_text = str(match.iloc[0]).lower()
+
+                    if data["ocean_vessel"].lower() in row_text:
+                        st.success("🚢 Vessel OK")
+                    else:
+                        st.error("❌ Vessel sai")
+
+                    if data["pod"].lower() in row_text:
+                        st.success("📍 POD OK")
+                        allow = True
+                    else:
+                        st.error("❌ POD sai")
+
+                else:
+                    st.error("❌ Container không có")
 
         # ===== EXPORT =====
         if allow:
@@ -174,7 +186,6 @@ with tab1:
 
                 etd_date = datetime.strptime(data["etd"], "%B %d, %Y").date()
 
-                # ===== SAVE DB =====
                 supabase.table("bill_of_lading").insert({
                     "bl_no": data["bl_no"],
                     "consignee": data["consignee"],
@@ -196,7 +207,6 @@ with tab1:
                     )
         else:
             st.warning("⚠️ DATA chưa đúng → không cho export")
-
 
 # =========================
 # ===== DASHBOARD =====
