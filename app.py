@@ -29,7 +29,7 @@ with tab1:
         with pdfplumber.open(pdf) as p:
             return "".join([page.extract_text() for page in p.pages])
 
-    # ===== PARSE CHUẨN =====
+    # ===== PARSE FINAL =====
     def parse(text):
         data = {}
 
@@ -91,52 +91,60 @@ with tab1:
 
         data["goods"] = " ".join(goods)
 
-        # ===== TOTAL (CHUẨN FILE CỦA BẠN) =====
-        packages = "0"
-        gross = "0"
-        cbm = "0"
+        # ===== TOTAL (FINAL FIX) =====
+        clean_text = text.replace("\n", " ")
 
-        for i, line in enumerate(lines):
-            if "TOTAL" in line:
-                for j in range(i+1, min(i+6, len(lines))):
-                    row = lines[j].strip()
+        total_match = re.search(
+            r"TOTAL\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)\s+([\d\.]+)",
+            clean_text
+        )
 
-                    if re.search(r"\d{1,3}(,\d{3})+", row):
-                        nums = re.findall(r"[\d,]+\.\d+|[\d,]+", row)
-
-                        if len(nums) >= 5:
-                            packages = nums[0]
-                            gross = nums[3]
-                            cbm = nums[4]
-                            break
-                break
-
-        data["packages"] = packages
-        data["gross"] = gross
-        data["cbm"] = cbm
+        if total_match:
+            data["packages"] = total_match.group(1)
+            data["gross"] = total_match.group(4)
+            data["cbm"] = total_match.group(5)
+        else:
+            data["packages"] = "0"
+            data["gross"] = "0"
+            data["cbm"] = "0"
 
         return data
 
-    # ===== B/L NUMBER =====
+    # ===== B/L NUMBER (FIXED) =====
     def generate_bl(etd):
-        dt = datetime.strptime(etd, "%B %d, %Y")
-        y = dt.year % 100
-        m = dt.month
+        try:
+            dt = datetime.strptime(etd, "%B %d, %Y")
+            y = dt.year % 100
+            m = dt.month
 
-        res = supabase.table("bl_counter").select("*").eq("year", y).eq("month", m).execute()
+            res = supabase.table("bl_counter") \
+                .select("*") \
+                .eq("year", y) \
+                .eq("month", m) \
+                .execute()
 
-        if res.data:
-            current = res.data[0]["current_no"] + 2
-            supabase.table("bl_counter").update({"current_no": current}).eq("year", y).eq("month", m).execute()
-        else:
-            current = 1
-            supabase.table("bl_counter").insert({
-                "year": y,
-                "month": m,
-                "current_no": current
-            }).execute()
+            if res.data and len(res.data) > 0:
+                row = res.data[0]
+                current = row["current_no"] + 2
 
-        return f"TRHY{y:02d}{m:02d}{current:03d}"
+                supabase.table("bl_counter") \
+                    .update({"current_no": current}) \
+                    .eq("id", row["id"]) \
+                    .execute()
+
+            else:
+                current = 1
+                supabase.table("bl_counter").insert({
+                    "year": y,
+                    "month": m,
+                    "current_no": current
+                }).execute()
+
+            return f"TRHY{y:02d}{m:02d}{current:03d}"
+
+        except Exception as e:
+            st.error(f"Lỗi generate BL: {e}")
+            return f"TRHY{y:02d}{m:02d}001"
 
     # ===== FILL PDF =====
     def fill_pdf(data):
@@ -153,7 +161,6 @@ with tab1:
 
         output = "BL_output.pdf"
         PdfWriter().write(output, template)
-
         return output
 
     # ===== RUN =====
