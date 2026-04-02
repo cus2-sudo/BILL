@@ -2,262 +2,145 @@ import streamlit as st
 import pdfplumber
 import pandas as pd
 import re
-from datetime import datetime
-from supabase import create_client
 from pdfrw import PdfReader, PdfWriter
-
-# ===== CONFIG =====
-SUPABASE_URL = "https://vicpfbrfodhgwkasrucl.supabase.co"
-SUPABASE_KEY = "sb_publishable_0uNjG9GCNulKyJ-J0sPH3g_aw0wip7Z"
-supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 st.set_page_config(page_title="B/L Tool", layout="wide")
 
-tab1, tab2 = st.tabs(["🚢 Tạo B/L", "📊 Dashboard"])
+st.title("🚢 BILL OF LADING AUTOMATION")
 
-# =========================
-# ===== TAB 1 =====
-# =========================
-with tab1:
+pdf_file = st.file_uploader("📄 Upload SI PDF", type=["pdf"])
+excel_file = st.file_uploader("📊 Upload DATA Excel", type=["xlsx"])
 
-    st.title("🚢 BILL OF LADING AUTOMATION")
 
-    pdf_file = st.file_uploader("📄 Upload SI PDF", type=["pdf"])
-    excel_file = st.file_uploader("📊 Upload DATA Excel", type=["xlsx"])
+# ===== EXTRACT TEXT =====
+def extract_text(pdf):
+    with pdfplumber.open(pdf) as p:
+        return " ".join([page.extract_text() for page in p.pages])
 
-    def extract_text(pdf):
-        with pdfplumber.open(pdf) as p:
-            return "".join([page.extract_text() for page in p.pages])
 
-    # ===== PARSE FINAL =====
-    def parse(text):
-        data = {}
+# ===== PARSE =====
+def parse(text):
+    data = {}
 
-        # ===== CONSIGNEE =====
-        m = re.search(r"Consigned to\s*:\s*\n(.+)", text)
-        data["consignee"] = m.group(1).strip() if m else ""
+    # ===== CONSIGNEE =====
+    m = re.search(r"Consigned to\s*:\s*(.*?)\s+Notify", text)
+    data["consignee"] = m.group(1).strip() if m else ""
 
-        # ===== POD (cắt trước PORT) =====
-        m = re.search(r"To\s*:\s*(.+)", text)
-        if m:
-            full_pod = m.group(1).strip()
-            if "PORT" in full_pod:
-                data["pod"] = full_pod.split("PORT")[0].strip()
-            else:
-                data["pod"] = full_pod.split(",")[0].strip()
-        else:
-            data["pod"] = ""
+    # ===== POD =====
+    m = re.search(r"To\s*:\s*(.+?)PORT", text)
+    data["pod"] = m.group(1).strip() if m else ""
 
-        # ===== CONTAINER =====
-        m = re.search(r"CONTAINER No/SEAL No\s*:\s*(\S+)/(\S+)", text)
-        if m:
-            data["container"] = m.group(1)
-            data["seal"] = m.group(2)
-        else:
-            data["container"] = ""
-            data["seal"] = ""
+    # ===== CONTAINER =====
+    m = re.search(r"CONTAINER No/SEAL No\s*:\s*(\S+)/(\S+)", text)
+    if m:
+        data["container"] = m.group(1)
+        data["seal"] = m.group(2)
+    else:
+        data["container"] = ""
+        data["seal"] = ""
 
-        # ===== VESSEL =====
-        m = re.search(r"VESSEL'S NAME:\s*(.*?)\n", text)
-        vessel_full = m.group(1).strip() if m else ""
+    # ===== VESSEL + VOYAGE =====
+    m = re.search(r"VESSEL'S NAME:\s*(.*?)\s", text)
+    vessel_full = m.group(1).strip() if m else ""
 
-        match = re.match(r"(.*)\s(\S+)$", vessel_full)
-        if match:
-            data["ocean_vessel"] = match.group(1)
-            data["voyage"] = match.group(2)
-        else:
-            data["ocean_vessel"] = vessel_full
-            data["voyage"] = ""
+    parts = vessel_full.split()
+    if len(parts) > 1:
+        data["voyage"] = parts[-1]
+        data["ocean_vessel"] = " ".join(parts[:-1])
+    else:
+        data["ocean_vessel"] = vessel_full
+        data["voyage"] = ""
 
-        # ===== ETD =====
-        m = re.search(r"ETD:\s*([A-Za-z]+\s\d{2},\s\d{4})", text)
-        data["etd"] = m.group(1) if m else ""
+    # ===== ETD =====
+    m = re.search(r"ETD:\s*([A-Za-z]+\s\d{2},\s\d{4})", text)
+    data["etd"] = m.group(1) if m else ""
 
-        # ===== GOODS =====
-        lines = text.split("\n")
-        goods = []
-        start = False
+    # ===== GOODS (CLEAN) =====
+    m = re.search(r"M3\s+(.*?)\s+TOTAL", text)
+    if m:
+        goods = m.group(1)
+        goods = re.sub(r"\s+", " ", goods)
+        data["goods"] = goods.strip()
+    else:
+        data["goods"] = ""
 
-        for line in lines:
-            if "Discription of Goods" in line or "Description of Goods" in line:
-                start = True
-                continue
+    # ===== TOTAL =====
+    total_match = re.search(
+        r"TOTAL\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)\s+([\d\.]+)",
+        text
+    )
 
-            if start:
-                if re.match(r"^1\s", line.strip()):
-                    break
-                if line.strip():
-                    goods.append(line.strip())
+    if total_match:
+        data["packages"] = total_match.group(1)
+        data["gross"] = total_match.group(4)
+        data["cbm"] = total_match.group(5)
+    else:
+        data["packages"] = "0"
+        data["gross"] = "0"
+        data["cbm"] = "0"
 
-        data["goods"] = " ".join(goods)
+    return data
 
-        # ===== TOTAL (FINAL FIX) =====
-        clean_text = text.replace("\n", " ")
 
-        total_match = re.search(
-            r"TOTAL\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)\s+([\d\.]+)",
-            clean_text
-        )
+# ===== FILL PDF =====
+def fill_pdf(data):
+    template = PdfReader("template.pdf")
 
-        if total_match:
-            data["packages"] = total_match.group(1)
-            data["gross"] = total_match.group(4)
-            data["cbm"] = total_match.group(5)
-        else:
-            data["packages"] = "0"
-            data["gross"] = "0"
-            data["cbm"] = "0"
-
-        return data
-
-    # ===== B/L NUMBER (FIXED) =====
-    def generate_bl(etd):
-        try:
-            dt = datetime.strptime(etd, "%B %d, %Y")
-            y = dt.year % 100
-            m = dt.month
-
-            res = supabase.table("bl_counter") \
-                .select("*") \
-                .eq("year", y) \
-                .eq("month", m) \
-                .execute()
-
-            if res.data and len(res.data) > 0:
-                row = res.data[0]
-                current = row["current_no"] + 2
-
-                supabase.table("bl_counter") \
-                    .update({"current_no": current}) \
-                    .eq("id", row["id"]) \
-                    .execute()
-
-            else:
-                current = 1
-                supabase.table("bl_counter").insert({
-                    "year": y,
-                    "month": m,
-                    "current_no": current
-                }).execute()
-
-            return f"TRHY{y:02d}{m:02d}{current:03d}"
-
-        except Exception as e:
-            st.error(f"Lỗi generate BL: {e}")
-            return f"TRHY{y:02d}{m:02d}001"
-
-    # ===== FILL PDF =====
-    def fill_pdf(data):
-        template = PdfReader("template.pdf")
-
-        for page in template.pages:
-            if page.Annots:
-                for annot in page.Annots:
+    for page in template.pages:
+        if hasattr(page, "Annots") and page.Annots:
+            for annot in page.Annots:
+                if annot.T:
                     key = annot.T[1:-1]
 
                     if key in data:
                         annot.V = str(data[key])
                         annot.AP = None
 
-        output = "BL_output.pdf"
-        PdfWriter().write(output, template)
-        return output
+    output = "BL_output.pdf"
+    PdfWriter().write(output, template)
+    return output
 
-    # ===== RUN =====
-    if pdf_file:
-        text = extract_text(pdf_file)
-        data = parse(text)
 
-        st.subheader("📋 Extracted Data")
-        st.json(data)
+# ===== RUN =====
+if pdf_file and excel_file:
 
-        allow = False
+    text = extract_text(pdf_file)
+    data = parse(text)
 
-        if excel_file:
-            df = pd.read_excel(excel_file)
+    df = pd.read_excel(excel_file)
 
-            container = data.get("container", "")
+    # chuẩn hóa cột excel
+    df.columns = df.columns.str.strip().str.upper()
 
-            if container == "":
-                st.error("❌ Không đọc được container")
-            else:
-                match = df[df.apply(lambda r: container in str(r), axis=1)]
+    st.subheader("📋 Extracted Data")
+    st.json(data)
 
-                if not match.empty:
-                    st.success("✅ Container OK")
+    container = data.get("container", "")
 
-                    row_text = str(match.iloc[0]).lower()
+    if container == "":
+        st.error("❌ Không đọc được container")
+    else:
+        match = df[df.apply(lambda r: container in str(r), axis=1)]
 
-                    if data["ocean_vessel"].lower() in row_text:
-                        st.success("🚢 Vessel OK")
-                    else:
-                        st.error("❌ Vessel sai")
+        if not match.empty:
 
-                    if data["pod"].lower() in row_text:
-                        st.success("📍 POD OK")
-                        allow = True
-                    else:
-                        st.error("❌ POD sai")
+            row = match.iloc[0]
 
-                else:
-                    st.error("❌ Container không có")
+            # ===== LẤY HBL NO =====
+            data["bl_no"] = str(row.get("HBL NO", "NO_BL"))
 
-        if allow:
+            st.success("✅ Match DATA + Lấy HBL NO")
+
             if st.button("📤 TẠO BILL (PDF)"):
 
-                if data["etd"] == "":
-                    st.error("❌ Thiếu ETD")
-                    st.stop()
-
-                data["bl_no"] = generate_bl(data["etd"])
                 pdf_file = fill_pdf(data)
 
-                try:
-                    etd_date = datetime.strptime(data["etd"], "%B %d, %Y").date()
-
-                    packages = int(data["packages"].replace(",", "")) if data["packages"] else 0
-                    gross = float(data["gross"].replace(",", "")) if data["gross"] else 0
-                    cbm = float(data["cbm"]) if data["cbm"] else 0
-
-                    supabase.table("bill_of_lading").insert({
-                        "bl_no": data["bl_no"],
-                        "consignee": data["consignee"],
-                        "container": data["container"],
-                        "ocean_vessel": data["ocean_vessel"],
-                        "voyage": data["voyage"],
-                        "pod": data["pod"],
-                        "etd": etd_date,
-                        "packages": packages,
-                        "gross": gross,
-                        "cbm": cbm
-                    }).execute()
-
-                except Exception as e:
-                    st.error(f"Lỗi DB: {e}")
-
                 with open(pdf_file, "rb") as f:
-                    st.download_button("⬇️ Download B/L PDF", f, file_name=data["bl_no"] + ".pdf")
+                    st.download_button(
+                        "⬇️ Download B/L PDF",
+                        f,
+                        file_name=data["bl_no"] + ".pdf"
+                    )
 
         else:
-            st.warning("⚠️ DATA chưa đúng → không cho export")
-
-# =========================
-# ===== DASHBOARD =====
-# =========================
-with tab2:
-
-    st.title("📊 B/L DASHBOARD")
-
-    res = supabase.table("bill_of_lading").select("*").execute()
-    df = pd.DataFrame(res.data)
-
-    if not df.empty:
-        search = st.text_input("🔍 Search")
-
-        if search:
-            df = df[df.apply(lambda r: search.lower() in str(r).lower(), axis=1)]
-
-        st.metric("📦 Total B/L", len(df))
-        st.dataframe(df.sort_values(by="id", ascending=False))
-    else:
-        st.info("Chưa có dữ liệu")
+            st.error("❌ Không match Excel")
