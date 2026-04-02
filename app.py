@@ -18,16 +18,31 @@ def extract_text(pdf):
         return " ".join([page.extract_text() for page in p.pages])
 
 
-# ===== PARSE =====
+# ===== PARSE FINAL =====
 def parse(text):
     data = {}
+
+    # normalize text
+    text = re.sub(r"\s+", " ", text)
 
     # ===== CONSIGNEE =====
     m = re.search(r"Consigned to\s*:\s*(.*?)\s+Notify", text)
     data["consignee"] = m.group(1).strip() if m else ""
 
+    # ===== VESSEL + VOYAGE =====
+    m = re.search(r"VESSEL'S NAME:\s*(.*?)\s+ETD", text)
+    vessel_full = m.group(1).strip() if m else ""
+
+    parts = vessel_full.split()
+    if len(parts) >= 2:
+        data["voyage"] = parts[-1]
+        data["ocean_vessel"] = " ".join(parts[:-1])
+    else:
+        data["ocean_vessel"] = vessel_full
+        data["voyage"] = ""
+
     # ===== POD =====
-    m = re.search(r"To\s*:\s*(.+?)PORT", text)
+    m = re.search(r"To\s*:\s*(.*?)\s+PORT", text)
     data["pod"] = m.group(1).strip() if m else ""
 
     # ===== CONTAINER =====
@@ -39,41 +54,33 @@ def parse(text):
         data["container"] = ""
         data["seal"] = ""
 
-    # ===== VESSEL + VOYAGE =====
-    m = re.search(r"VESSEL'S NAME:\s*(.*?)\s", text)
-    vessel_full = m.group(1).strip() if m else ""
-
-    parts = vessel_full.split()
-    if len(parts) > 1:
-        data["voyage"] = parts[-1]
-        data["ocean_vessel"] = " ".join(parts[:-1])
-    else:
-        data["ocean_vessel"] = vessel_full
-        data["voyage"] = ""
-
     # ===== ETD =====
     m = re.search(r"ETD:\s*([A-Za-z]+\s\d{2},\s\d{4})", text)
     data["etd"] = m.group(1) if m else ""
 
-    # ===== GOODS (CLEAN) =====
-    m = re.search(r"M3\s+(.*?)\s+TOTAL", text)
+    # ===== GOODS =====
+    m = re.search(r"Description of Goods\s+(.*?)\s+TOTAL", text)
     if m:
         goods = m.group(1)
+
+        # clean rác
+        goods = re.sub(r"Carton.*?M3", "", goods)
         goods = re.sub(r"\s+", " ", goods)
+
         data["goods"] = goods.strip()
     else:
         data["goods"] = ""
 
     # ===== TOTAL =====
-    total_match = re.search(
+    m = re.search(
         r"TOTAL\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)\s+([\d\.]+)",
         text
     )
 
-    if total_match:
-        data["packages"] = total_match.group(1)
-        data["gross"] = total_match.group(4)
-        data["cbm"] = total_match.group(5)
+    if m:
+        data["packages"] = m.group(1)
+        data["gross"] = m.group(4)
+        data["cbm"] = m.group(5)
     else:
         data["packages"] = "0"
         data["gross"] = "0"
