@@ -1,0 +1,6 @@
+streamlit
+pdfplumber
+pandas
+supabase
+pdfrw
+openpyxl
