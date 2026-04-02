@@ -13,7 +13,6 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 st.set_page_config(page_title="B/L Tool", layout="wide")
 
-# ===== TABS =====
 tab1, tab2 = st.tabs(["🚢 Tạo B/L", "📊 Dashboard"])
 
 # =========================
@@ -26,12 +25,11 @@ with tab1:
     pdf_file = st.file_uploader("📄 Upload SI PDF", type=["pdf"])
     excel_file = st.file_uploader("📊 Upload DATA Excel", type=["xlsx"])
 
-    # ===== EXTRACT TEXT =====
     def extract_text(pdf):
         with pdfplumber.open(pdf) as p:
             return "".join([page.extract_text() for page in p.pages])
 
-    # ===== PARSE (FIT FILE CỦA BẠN) =====
+    # ===== PARSE CHUẨN =====
     def parse(text):
         data = {}
 
@@ -39,18 +37,16 @@ with tab1:
         m = re.search(r"Consigned to\s*:\s*\n(.+)", text)
         data["consignee"] = m.group(1).strip() if m else ""
 
-        # ===== POD =====
-       m = re.search(r"To\s*:\s*(.+)", text)
-
-if m:
-    full_pod = m.group(1).strip()
-
-    # Lấy phần trước chữ PORT
-    pod_clean = re.split(r"\s+PORT", full_pod)[0]
-
-    data["pod"] = pod_clean.strip()
-else:
-    data["pod"] = ""
+        # ===== POD (cắt trước PORT) =====
+        m = re.search(r"To\s*:\s*(.+)", text)
+        if m:
+            full_pod = m.group(1).strip()
+            if "PORT" in full_pod:
+                data["pod"] = full_pod.split("PORT")[0].strip()
+            else:
+                data["pod"] = full_pod.split(",")[0].strip()
+        else:
+            data["pod"] = ""
 
         # ===== CONTAINER =====
         m = re.search(r"CONTAINER No/SEAL No\s*:\s*(\S+)/(\S+)", text)
@@ -95,21 +91,29 @@ else:
 
         data["goods"] = " ".join(goods)
 
-        # ===== TOTAL =====
-        total = re.search(
-            r"TOTAL.*?\n.*?([\d,]+)\s+[\d,]+\s+[\d,]+\s+([\d,]+)\s+([\d\.]+)",
-            text,
-            re.DOTALL
-        )
+        # ===== TOTAL (CHUẨN FILE CỦA BẠN) =====
+        packages = "0"
+        gross = "0"
+        cbm = "0"
 
-        if total:
-            data["packages"] = total.group(1)
-            data["gross"] = total.group(2)
-            data["cbm"] = total.group(3)
-        else:
-            data["packages"] = "0"
-            data["gross"] = "0"
-            data["cbm"] = "0"
+        for i, line in enumerate(lines):
+            if "TOTAL" in line:
+                for j in range(i+1, min(i+6, len(lines))):
+                    row = lines[j].strip()
+
+                    if re.search(r"\d{1,3}(,\d{3})+", row):
+                        nums = re.findall(r"[\d,]+\.\d+|[\d,]+", row)
+
+                        if len(nums) >= 5:
+                            packages = nums[0]
+                            gross = nums[3]
+                            cbm = nums[4]
+                            break
+                break
+
+        data["packages"] = packages
+        data["gross"] = gross
+        data["cbm"] = cbm
 
         return data
 
@@ -162,7 +166,6 @@ else:
 
         allow = False
 
-        # ===== CHECK DATA =====
         if excel_file:
             df = pd.read_excel(excel_file)
 
@@ -192,18 +195,16 @@ else:
                 else:
                     st.error("❌ Container không có")
 
-        # ===== EXPORT =====
         if allow:
             if st.button("📤 TẠO BILL (PDF)"):
 
                 if data["etd"] == "":
-                    st.error("❌ Thiếu ETD → không tạo được")
+                    st.error("❌ Thiếu ETD")
                     st.stop()
 
                 data["bl_no"] = generate_bl(data["etd"])
                 pdf_file = fill_pdf(data)
 
-                # ===== SAFE INSERT =====
                 try:
                     etd_date = datetime.strptime(data["etd"], "%B %d, %Y").date()
 
@@ -228,11 +229,7 @@ else:
                     st.error(f"Lỗi DB: {e}")
 
                 with open(pdf_file, "rb") as f:
-                    st.download_button(
-                        "⬇️ Download B/L PDF",
-                        f,
-                        file_name=data["bl_no"] + ".pdf"
-                    )
+                    st.download_button("⬇️ Download B/L PDF", f, file_name=data["bl_no"] + ".pdf")
 
         else:
             st.warning("⚠️ DATA chưa đúng → không cho export")
