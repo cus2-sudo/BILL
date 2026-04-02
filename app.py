@@ -31,13 +31,17 @@ with tab1:
         with pdfplumber.open(pdf) as p:
             return "".join([page.extract_text() for page in p.pages])
 
-    # ===== PARSE =====
+    # ===== PARSE (FIT FILE CỦA BẠN) =====
     def parse(text):
         data = {}
 
         # ===== CONSIGNEE =====
         m = re.search(r"Consigned to\s*:\s*\n(.+)", text)
         data["consignee"] = m.group(1).strip() if m else ""
+
+        # ===== POD =====
+        m = re.search(r"To\s*:\s*(.+)", text)
+        data["pod"] = m.group(1).strip() if m else ""
 
         # ===== CONTAINER =====
         m = re.search(r"CONTAINER No/SEAL No\s*:\s*(\S+)/(\S+)", text)
@@ -70,19 +74,25 @@ with tab1:
         start = False
 
         for line in lines:
-            if "Description of Goods" in line or "Discription of Goods" in line:
+            if "Discription of Goods" in line or "Description of Goods" in line:
                 start = True
                 continue
 
             if start:
                 if re.match(r"^1\s", line.strip()):
                     break
-                goods.append(line.strip())
+                if line.strip():
+                    goods.append(line.strip())
 
         data["goods"] = " ".join(goods)
 
         # ===== TOTAL =====
-        total = re.search(r"TOTAL.*?\n.*?([\d,]+)\s+([\d,]+)\s+([\d\.]+)", text, re.DOTALL)
+        total = re.search(
+            r"TOTAL.*?\n.*?([\d,]+)\s+[\d,]+\s+[\d,]+\s+([\d,]+)\s+([\d\.]+)",
+            text,
+            re.DOTALL
+        )
+
         if total:
             data["packages"] = total.group(1)
             data["gross"] = total.group(2)
@@ -91,10 +101,6 @@ with tab1:
             data["packages"] = "0"
             data["gross"] = "0"
             data["cbm"] = "0"
-
-        # ===== POD =====
-        m = re.search(r"TO\s*:\s*\n(.+)", text)
-        data["pod"] = m.group(1).strip() if m else ""
 
         return data
 
@@ -154,7 +160,7 @@ with tab1:
             container = data.get("container", "")
 
             if container == "":
-                st.error("❌ Không đọc được container từ PDF")
+                st.error("❌ Không đọc được container")
             else:
                 match = df[df.apply(lambda r: container in str(r), axis=1)]
 
@@ -180,24 +186,37 @@ with tab1:
         # ===== EXPORT =====
         if allow:
             if st.button("📤 TẠO BILL (PDF)"):
-                data["bl_no"] = generate_bl(data["etd"])
 
+                if data["etd"] == "":
+                    st.error("❌ Thiếu ETD → không tạo được")
+                    st.stop()
+
+                data["bl_no"] = generate_bl(data["etd"])
                 pdf_file = fill_pdf(data)
 
-                etd_date = datetime.strptime(data["etd"], "%B %d, %Y").date()
+                # ===== SAFE INSERT =====
+                try:
+                    etd_date = datetime.strptime(data["etd"], "%B %d, %Y").date()
 
-                supabase.table("bill_of_lading").insert({
-                    "bl_no": data["bl_no"],
-                    "consignee": data["consignee"],
-                    "container": data["container"],
-                    "ocean_vessel": data["ocean_vessel"],
-                    "voyage": data["voyage"],
-                    "pod": data["pod"],
-                    "etd": etd_date,
-                    "packages": int(data["packages"].replace(",", "")),
-                    "gross": float(data["gross"].replace(",", "")),
-                    "cbm": float(data["cbm"])
-                }).execute()
+                    packages = int(data["packages"].replace(",", "")) if data["packages"] else 0
+                    gross = float(data["gross"].replace(",", "")) if data["gross"] else 0
+                    cbm = float(data["cbm"]) if data["cbm"] else 0
+
+                    supabase.table("bill_of_lading").insert({
+                        "bl_no": data["bl_no"],
+                        "consignee": data["consignee"],
+                        "container": data["container"],
+                        "ocean_vessel": data["ocean_vessel"],
+                        "voyage": data["voyage"],
+                        "pod": data["pod"],
+                        "etd": etd_date,
+                        "packages": packages,
+                        "gross": gross,
+                        "cbm": cbm
+                    }).execute()
+
+                except Exception as e:
+                    st.error(f"Lỗi DB: {e}")
 
                 with open(pdf_file, "rb") as f:
                     st.download_button(
@@ -205,6 +224,7 @@ with tab1:
                         f,
                         file_name=data["bl_no"] + ".pdf"
                     )
+
         else:
             st.warning("⚠️ DATA chưa đúng → không cho export")
 
@@ -219,15 +239,12 @@ with tab2:
     df = pd.DataFrame(res.data)
 
     if not df.empty:
-
         search = st.text_input("🔍 Search")
 
         if search:
             df = df[df.apply(lambda r: search.lower() in str(r).lower(), axis=1)]
 
         st.metric("📦 Total B/L", len(df))
-
         st.dataframe(df.sort_values(by="id", ascending=False))
-
     else:
         st.info("Chưa có dữ liệu")
