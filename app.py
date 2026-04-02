@@ -7,8 +7,8 @@ from supabase import create_client
 from pdfrw import PdfReader, PdfWriter
 
 # ===== CONFIG =====
-SUPABASE_URL = "YOUR_URL"
-SUPABASE_KEY = "YOUR_KEY"
+SUPABASE_URL = "https://vicpfbrfodhgwkasrucl.supabase.co"
+SUPABASE_KEY = "sb_publishable_0uNjG9GCNulKyJ-J0sPH3g_aw0wip7Z"
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 st.set_page_config(page_title="B/L Tool", layout="wide")
