@@ -40,8 +40,17 @@ with tab1:
         data["consignee"] = m.group(1).strip() if m else ""
 
         # ===== POD =====
-        m = re.search(r"To\s*:\s*(.+)", text)
-        data["pod"] = m.group(1).strip() if m else ""
+       m = re.search(r"To\s*:\s*(.+)", text)
+
+if m:
+    full_pod = m.group(1).strip()
+
+    # Lấy phần trước chữ PORT
+    pod_clean = re.split(r"\s+PORT", full_pod)[0]
+
+    data["pod"] = pod_clean.strip()
+else:
+    data["pod"] = ""
 
         # ===== CONTAINER =====
         m = re.search(r"CONTAINER No/SEAL No\s*:\s*(\S+)/(\S+)", text)
